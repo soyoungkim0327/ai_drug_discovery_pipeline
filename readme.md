@@ -1,125 +1,102 @@
-
-
 ---
 
 # End-to-End Deep Learning Framework for Drug Discovery
 
 ## Introduction
 
-본 프로젝트는 **AI 기반 신약 개발(AI-Driven Drug Discovery)**의 전 주기를 포괄하는 딥러닝 프레임워크입니다. 분자 물성 예측(Property Prediction), 3D 구조 분석(Conformation Analysis), 그리고 신규 후보 물질 생성(De Novo Design)을 수행하기 위해 **Geometric Deep Learning**과 **Generative Models**의 최신 방법론을 구현하였습니다.
+본 프로젝트는 **AI 기반 신약 개발(AI-Driven Drug Discovery)**의 전 주기를 "데모 파이프라인" 형태로 연결한 딥러닝 프레임워크입니다.
 
-단순한 모델 구현을 넘어, 실무 적용을 고려한 **Hyperparameter Tuning, Early Stopping, Modular Architecture**를 적용하여 코드의 재사용성과 모델의 일반화 성능(Robustness)을 확보하였습니다.
+- 분자 물성 예측(Property Prediction)
+- 3D 구조 기반 예측(Conformation / Geometric Deep Learning)
+- 생성형 모델 기반 구조 생성(Generative Models)
+- 단백질-리간드 상호작용(Protein-Ligand Interaction) 분석
+
+실험 재현성과 코드 품질을 위해 **train/val/test 분리**, **early stopping (VAL 기준)**, **robust path handling**, **metadata 로그(JSON)**를 포함하도록 정리했습니다.
 
 ## Model Architectures & Methodologies
 
-본 프레임워크는 연구 목적에 따라 총 4개의 핵심 모듈로 구성됩니다.
-
-### 1. Molecular Property Prediction (Graph Neural Networks)
-
-약물의 지질 친화도(Lipophilicity, LogP)를 정밀하게 예측하기 위한 회귀(Regression) 모델입니다.
-
-* **GCN (Graph Convolutional Network):** 기본적인 분자 그래프 학습을 위한 Baseline 모델.
-* **GAT (Graph Attention Network):** Self-Attention 메커니즘을 도입하여, 분자 내 주요 작용기(Functional Group) 간의 상호작용 가중치를 학습, 예측 정확도를 극대화하였습니다.
+### 1. Molecular Property Prediction (GNN)
+- **GCN**: Baseline 회귀 모델
+- **GAT**: Attention 기반 회귀 모델
 
 ### 2. 3D Structure Analysis (Geometric Deep Learning)
+- **SchNet**: 원자 좌표 기반 연속 필터 컨볼루션
 
-분자의 2D 위상 정보뿐만 아니라, 3차원 공간 좌표(Atomic Coordinates)를 학습에 활용합니다.
-
-* **SchNet:** Continuous-filter Convolution을 적용하여 원자 간의 거리 정보와 상호작용 에너지를 모델링합니다.
-
-### 3. Generative Chemistry (De Novo Design)
-
-신규 약물 후보 물질 생성을 위한 생성형 AI 모델을 구현하였습니다.
-
-* **VGAE (Variational Graph Autoencoder):** 분자 그래프의 잠재 공간(Latent Space)을 학습하여 새로운 분자 구조를 생성합니다.
-* **Diffusion Model (Score-based Generative Modeling):** 노이즈 제거 과정(Denoising Process)을 통해 안정적인 3D 분자 구조(Conformation)를 생성합니다.
+### 3. Generative Models
+- **VGAE**: 그래프 링크 예측/복원 기반 잠재공간 학습 (※ 단일 그래프 데모)
+- **Diffusion (Toy)**: 2D 포인트에서의 denoising trajectory 데모
 
 ### 4. Protein-Ligand Interaction
-
-* **Binding Simulation:** 타겟 단백질(PDB)과 리간드 간의 결합 친화도(Binding Affinity)를 Radius Graph 기반으로 분석합니다.
-
-## Performance Benchmarks
-
-`MoleculeNet (Lipo)` 데이터셋을 기준으로 수행한 성능 평가 결과입니다. GAT 모델이 Baseline(GCN) 대비 유의미한 성능 향상을 보였습니다.
-
-| Model | Task | Metric (Test) | Note |
-| --- | --- | --- | --- |
-| **GCN** | LogP Regression | MAE: 0.8275 | Baseline |
-| **GAT** | LogP Regression | **MAE: 0.5924** | **SOTA-level Performance** |
-| **SchNet** | 3D Energy Regression | MAE: 0.7743 | Geometric Learning |
-| **VGAE** | Link Prediction | **AUC: 1.0000** | Graph Reconstruction |
+- **PDB 기반 거리/반경 그래프 기반 분석** (데모)
 
 ## Repository Structure
 
 ```text
-Drug-Discovery-AI/
-├── 01_Property_Prediction/   # GNN (GCN, GAT) Training & Inference
-├── 02_3D_Structure/          # SchNet Training
-├── 03_Generative_AI/         # Generative Models (VGAE, Diffusion)
-├── 04_Molecular_Interaction/ # Protein-Ligand Binding Simulation
-├── docs/                     # Experiment Reports & Documentation
-└── data/                     # Dataset Storage
-
+ai_drug_discovery_pipeline/
+├── 01_property_prediction/         # GNN Training & Inference
+├── 02_3d_structure/                # SchNet Training & Inference
+├── 03_generative_ai/               # VGAE, Diffusion
+├── 04_molecular_interaction/       # PDB Interaction Demo
+├── docs/                           # Reports
+├── data/                           # Cached datasets
+├── install_guide.md
+├── readme.md
+└── result.md
 ```
 
-## Usage & Reproduction
-
-본 프로젝트는 `Python 3.8+` 및 `PyTorch Geometric` 환경에서 구동됩니다.
+## Usage
 
 ### Installation
 
 ```bash
 pip install -r requirements.txt
-
 ```
 
-### 1. Property Prediction
-
-Graph Attention Network(GAT)를 이용한 물성 예측 모델 학습 및 추론:
+### 1) Property Prediction (LogP)
 
 ```bash
-# Training
-python 01_Property_Prediction/train_gat.py
+# Train (GCN baseline)
+python 01_property_prediction/1_1_train_gcn_es_p.py
 
-# Inference (Real-world Data)
-python 01_Property_Prediction/predict.py
+# Train (GAT)
+python 01_property_prediction/1_2_train_gat_es_p.py
 
+# (Optional) Train GAT with target scaling + scaler artifacts
+python 01_property_prediction/1_2_train_gat_es_p_sc.py
+
+# Inference (real-world SMILES)
+python 01_property_prediction/6_1_inference_logp_real_world_prediction.py
 ```
 
-### 2. 3D Molecular Analysis
-
-SchNet을 이용한 3D 구조 및 에너지 학습:
+### 2) 3D Structure (SchNet)
 
 ```bash
-python 02_3D_Structure/train_schnet.py
-
+python 02_3d_structure/2_train_schnet_3d_es_p.py
+python 02_3d_structure/6_2_inference_schnet_3d.py
 ```
 
-### 3. Generative Models
-
-Diffusion Model을 이용한 3D 분자 구조 생성:
+### 3) Generative Models
 
 ```bash
-# Training
-python 03_Generative_AI/train_diffusion.py
+# VGAE train + inference
+python 03_generative_ai/3_generative_project_es_p.py
+python 03_generative_ai/6_3_inference_vgae.py
 
-# Generation (Inference)
-python 03_Generative_AI/inference_diffusion.py
-
+# Diffusion train + inference
+python 03_generative_ai/5_diffusion_simple_es_p.py
+python 03_generative_ai/6_5_inference_diffusion.py
 ```
 
-### 4. Interaction Simulation
-
-특정 타겟(예: Gleevec)에 대한 결합 시뮬레이션:
+### 4) Interaction (PDB demo)
 
 ```bash
-python 04_Molecular_Interaction/binding_gleevec.py
-
+python 04_molecular_interaction/4_binding_inference_pdb_binding_gleevec.py
 ```
 
-## License
+## Notes
 
-Distributed under the MIT License. See `LICENSE` for more information.
+- **결과 수치는 split/seed/환경에 따라 달라질 수 있습니다.**
+- VGAE는 본 레포에서 **단일 그래프(dataset[0]) 데모**로 구성되어 있어 AUC가 매우 높게 나올 수 있습니다.
+- 자세한 실험 로그는 `result.md`를 참고하세요.
 
 ---
-

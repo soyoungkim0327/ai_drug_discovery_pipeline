@@ -1,40 +1,48 @@
+"""1_1_train_gcn_es_p.py
+
+GCN baseline regression (LogP) on MoleculeNet: Lipo.
+
+Changes (professional hygiene):
+- Proper train/val/test split (early stopping monitors VAL, not TEST).
+- Robust paths: dataset + checkpoints resolve from project root.
+- main() entry-point.
+
+Run:
+    python 01_property_prediction/1_1_train_gcn_es_p.py
+"""
+
 import os
+import json
+from datetime import datetime
+import random
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.datasets import MoleculeNet
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
 
-# [System Config] Windows 환경에서의 OpenMP 충돌 방지 설정
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
-# [Device Config] CUDA(GPU) 사용 가능 여부 확인 및 할당
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def set_seed(seed: int = 42) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
-print(f"Current Device: {device}")
 
-
-# 1. 환경 변수 및 디바이스 설정
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Device in use: {device}")
-
-# 2. 데이터셋 로드 및 전처리 (MoleculeNet: Lipo)
-dataset = MoleculeNet(root='data/Lipo', name='Lipo')
-train_dataset = dataset[:3300]
-test_dataset = dataset[3300:]
-
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-# 3. 모델 아키텍처 정의 (GCN: Graph Convolutional Network)
-class GCNModel(torch.nn.Module):
-    def __init__(self, hidden_channels):
-        super(GCNModel, self).__init__()
-        self.conv1 = GCNConv(dataset.num_node_features, hidden_channels)
-        self.conv2 = GCNConv(hidden_channels, hidden_channels)
-        self.conv3 = GCNConv(hidden_channels, hidden_channels)
-        self.lin = torch.nn.Linear(hidden_channels, 1)
+class GCNRegressor(torch.nn.Module):
+    def __init__(self, in_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        self.conv1 = GCNConv(in_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.conv3 = GCNConv(hidden_dim, hidden_dim)
+        self.lin = torch.nn.Linear(hidden_dim, 1)
 
     def forward(self, x, edge_index, batch):
         x = self.conv1(x, edge_index).relu()
@@ -43,66 +51,134 @@ class GCNModel(torch.nn.Module):
         x = global_mean_pool(x, batch)
         return self.lin(x)
 
-model = GCNModel(hidden_channels=64).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-# 4. 학습(Train) 및 평가(Test) 함수 정의
-def train():
+def train_one_epoch(model, loader, optimizer, device) -> float:
     model.train()
-    for data in train_loader:
-        data = data.to(device)
-        optimizer.zero_grad()
-        out = model(data.x.float(), data.edge_index, data.batch)
-        loss = F.mse_loss(out.squeeze(), data.y.squeeze()) 
-        loss.backward()
-        optimizer.step()
-
-def test(loader):
-    model.eval()
-    error = 0
+    total_loss = 0.0
     for data in loader:
         data = data.to(device)
-        out = model(data.x.float(), data.edge_index, data.batch)
-        error += (out.squeeze() - data.y.squeeze()).abs().sum().item()
-    return error / len(loader.dataset)
+        optimizer.zero_grad(set_to_none=True)
+        pred = model(data.x.float(), data.edge_index, data.batch).view(-1)
+        y = data.y.view(-1)
+        loss = F.mse_loss(pred, y)
+        loss.backward()
+        optimizer.step()
+        total_loss += float(loss.item())
+    return total_loss / max(1, len(loader))
 
-# ============================================================
-# [Main Loop] Early Stopping 메커니즘이 적용된 학습 파이프라인
-# ============================================================
-print("Start Training (Early Stopping applied)...")
 
-# Hyperparameters 및 Early Stopping 설정
-patience = 20           # 성능 개선이 없을 시 대기할 최대 Epoch 수
-patience_counter = 0    # 현재 대기 카운트
-best_mae = float('inf') # 최적의 MAE 기록 초기화
-max_epochs = 1000       # 최대 학습 Epoch
+@torch.no_grad()
+def evaluate_mae(model, loader, device) -> float:
+    model.eval()
+    abs_err_sum = 0.0
+    n = 0
+    for data in loader:
+        data = data.to(device)
+        pred = model(data.x.float(), data.edge_index, data.batch).view(-1)
+        y = data.y.view(-1)
+        abs_err_sum += float((pred - y).abs().sum().item())
+        n += int(y.numel())
+    return abs_err_sum / max(1, n)
 
-for epoch in range(1, max_epochs + 1):
-    train() # 학습 수행
-    
-    # 매 Epoch마다 테스트 데이터셋으로 검증
-    test_mae = test(test_loader)
-    
-    # 1. 성능 개선 확인 (MAE 감소)
-    if test_mae < best_mae:
-        best_mae = test_mae
-        patience_counter = 0 # 카운터 초기화
-        
-        # 최적 모델 가중치 저장
-        torch.save(model.state_dict(), 'best_gcn_model.pth')
-        print(f'Epoch: {epoch:03d}, MAE: {test_mae:.4f} [New Best Model Saved]')
-        
-    # 2. 성능 개선 없음 (Patience 증가)
-    else:
-        patience_counter += 1
-        if epoch % 10 == 0: # 10 Epoch마다 로그 출력
-             print(f'Epoch: {epoch:03d}, MAE: {test_mae:.4f} (Waiting... {patience_counter}/{patience})')
-        
-        # 3. 조기 종료 (Early Stopping) 조건 충족
-        if patience_counter >= patience:
-            print(f"\nStop Training (Early Stopping Triggered)")
-            print(f"   - No improvement for {patience} epochs.")
-            print(f"   - Best MAE: {best_mae:.4f}")
-            break
 
-print("Task Completed. (Best model saved as 'best_gcn_model.pth')")
+def main() -> None:
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
+
+    seed = 42
+    set_seed(seed)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    script_dir = Path(__file__).resolve().parent
+    project_root = script_dir.parent
+    data_root = project_root / "data" / "Lipo"
+    ckpt_path = script_dir / "best_gcn_model.pth"
+    meta_path = ckpt_path.with_suffix(".meta.json")
+
+    dataset = MoleculeNet(root=str(data_root), name="Lipo")
+    n_total = len(dataset)
+    n_train = int(0.8 * n_total)
+    n_val = int(0.1 * n_total)
+    n_test = n_total - n_train - n_val
+
+    gen = torch.Generator().manual_seed(seed)
+    train_ds, val_ds, test_ds = torch.utils.data.random_split(
+        dataset, [n_train, n_val, n_test], generator=gen
+    )
+
+    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=32, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=32, shuffle=False)
+
+    in_dim = dataset.num_node_features
+    print(f"Dataset size: {n_total} | split train/val/test = {n_train}/{n_val}/{n_test}")
+    print(f"Input node feature dim (in_dim) = {in_dim}")
+
+    model = GCNRegressor(in_dim=in_dim).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+    patience = 20
+    patience_counter = 0
+    best_val_mae = float("inf")
+    max_epochs = 1000
+
+    print("Start GCN training (early stopping on VAL)...")
+
+    for epoch in range(1, max_epochs + 1):
+        train_loss = train_one_epoch(model, train_loader, optimizer, device)
+        val_mae = evaluate_mae(model, val_loader, device)
+
+        if val_mae < best_val_mae:
+            best_val_mae = val_mae
+            patience_counter = 0
+            torch.save(model.state_dict(), ckpt_path)
+            print(
+                f"Epoch {epoch:03d} | train_loss={train_loss:.4f} | val_MAE={val_mae:.4f} "
+                f"[best -> saved {ckpt_path.name}]"
+            )
+        else:
+            patience_counter += 1
+            if epoch % 10 == 0:
+                print(
+                    f"Epoch {epoch:03d} | train_loss={train_loss:.4f} | val_MAE={val_mae:.4f} "
+                    f"(waiting {patience_counter}/{patience})"
+                )
+            if patience_counter >= patience:
+                print("\nEarly stopping triggered.")
+                print(f"Best VAL MAE: {best_val_mae:.4f}")
+                break
+
+    # Final test evaluation
+    if ckpt_path.exists():
+        state = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(state)
+
+    test_mae = evaluate_mae(model, test_loader, device)
+
+    # Write lightweight metadata for inference/debugging
+    meta = {
+        "model_type": "GCN",
+        "dataset": "MoleculeNet/Lipo",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "seed": seed,
+        "in_dim": in_dim,
+        "target_scaling": {"enabled": False},
+        "split": {"train": n_train, "val": n_val, "test": n_test},
+        "best_val_mae": best_val_mae,
+        "final_test_mae": test_mae,
+        "checkpoint": str(ckpt_path.name),
+    }
+    try:
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        print(f"Metadata written: {meta_path}")
+    except Exception as e:
+        print(f"[Warning] Failed to write metadata: {type(e).__name__}: {e}")
+    print("\n====================")
+    print(f"Final TEST MAE: {test_mae:.4f}")
+    print(f"Checkpoint: {ckpt_path}")
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()

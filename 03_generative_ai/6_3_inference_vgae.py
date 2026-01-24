@@ -1,5 +1,6 @@
 # 6-3.Inference_VGAE.py (FIXED: load existing pth + float-cast before NormalizeFeatures)
 import os
+from pathlib import Path
 import torch
 
 from torch_geometric.datasets import MoleculeNet
@@ -13,6 +14,9 @@ print(f"Current Device: {device}")
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(current_dir, "best_vgae_model.pth")
+
+project_root = Path(current_dir).parent
+data_root = project_root / "data" / "Lipo"
 
 
 # 2. Preprocessing Utility: Type Casting (Int64 -> Float32)
@@ -118,7 +122,7 @@ if __name__ == "__main__":
 
     # 1. Data Loading & Preprocessing
     # Pipeline: CastXToFloat (Int64->Float32) -> NormalizeFeatures
-    dataset = MoleculeNet(root="data/Lipo", name="Lipo", transform=CastXToFloat())
+    dataset = MoleculeNet(root=str(data_root), name="Lipo", transform=CastXToFloat())
     data = dataset[0]
     # Apply normalization after indexing
     data = NormalizeFeatures()(data)
