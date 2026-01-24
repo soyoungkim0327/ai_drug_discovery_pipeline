@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# ML artifacts
+*.pth
+*.pt
+*.ckpt
+*.pkl
+
+# Data (필요에 따라 조정)
+data/
+datasets/
