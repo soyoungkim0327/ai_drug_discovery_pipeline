@@ -1,5 +1,4 @@
 
-
 # End-to-End Geometric Deep Learning Framework for Structure-Based Drug Discovery
 
 ## Project Overview
@@ -42,6 +41,13 @@ A regression framework designed to precisely predict drug lipophilicity (LogP).
 Utilizes 3D atomic coordinates in addition to 2D topological information.
 
 * **SchNet:** Applies continuous-filter convolutions to model inter-atomic distances and interaction energies effectively.
+
+> **Hybrid Reasoning: 3D Conformer & Ensemble Strategy**
+> To ensure physics-aware inference, we implement a rigorous 3D generation pipeline:
+> * **Necessity of 3D:** Molecular docking relies on stereochemical fit, making RDKit-based conformer generation mandatory for valid simulations.
+> * **Ensemble Scoring:** To mitigate local minima risks in conformer generation, we employ an **Ensemble Strategy**—aggregating predictions across multiple generated conformers to statistically minimize uncertainty and ensure robust scoring.
+> 
+> 
 
 ### 3. Generative Chemistry (De Novo Design)
 
@@ -92,7 +98,7 @@ To overcome the limitations of single models, I constructed an intelligent infer
 
 
 * **Threshold Optimization (Calibration)**
- While a default threshold of 0.5 is used for demonstration due to the dataset size, the optimal cutoff is scientifically derived using 6_0_calibrate_gate_threshold.py. This script performs a Grid Search on the validation set to find the exact similarity score that minimizes the overall RMSE. This ensures the switching logic in 6_1_inference_logp_real_world_prediction_ensemble.py is based on data-driven evidence rather than intuition.
+* While a default threshold of 0.5 is used for demonstration, the optimal cutoff is scientifically derived using `6_0_calibrate_gate_threshold.py`. This script performs a Grid Search on the validation set to find the exact similarity score that minimizes the overall RMSE, ensuring the switching logic is based on data-driven evidence.
 
 
 
@@ -189,13 +195,6 @@ A demonstration pipeline tailored for protein design tasks. It covers the **Desi
 
 Distributed under the MIT License. See `LICENSE` for more information.
 
-
-
-
-
-
-
-
 ---
 
 # 구조 기반 신약 개발을 위한 엔드투엔드 기하학적 딥러닝 프레임워크
@@ -245,6 +244,13 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 * **SchNet:** Continuous-filter Convolution을 적용하여 원자 간 거리 정보와 상호작용 에너지를 모델링합니다.
 
+> **하이브리드 추론 전략: 3D Conformer & 앙상블 (Hybrid Reasoning)**
+> 물리적 실재성을 반영하기 위해 고도화된 3D 변환 파이프라인을 적용했습니다.
+> * **3D 변환의 필수성:** 도킹 및 결합은 입체 적합성(Stereochemical fit)에 기반하므로 RDKit을 통한 Conformer 생성이 필수적입니다.
+> * **앙상블 전략:** 단일 Conformer 생성 시 발생할 수 있는 국소 최저점(Local Minimum) 오류를 방지하기 위해, 다수의 구조를 생성하고 예측값을 통계적으로 결합(Ensemble)하여 불확실성을 최소화했습니다.
+> 
+> 
+
 ### 3) Generative Chemistry (De Novo Design)
 
 신규 약물 후보 물질 탐색을 위한 생성형 AI 모델입니다.
@@ -293,8 +299,9 @@ Distributed under the MIT License. See `LICENSE` for more information.
 * **Low Similarity (≤ 0.5): Model B (Dropout GAT) 사용**
 * 입력이 "분포 외 데이터(OOD)"에 속함. **강건성(Robustness)**과 안전성을 최우선으로 하여, 환각(Hallucination)이나 극단적 오차를 방지하는 정규화된 모델 사용.
 
+
 * **임계값 최적화 전략 (Threshold Optimization)**
-본 데모에서는 데이터셋 규모를 고려하여 0.5를 기본값으로 설정했으나, 실제 최적의 임계값은 6_0_calibrate_gate_threshold.py를 통해 수학적으로 도출합니다. 이 스크립트는 검증 데이터(Validation Set)에 대한 Grid Search를 수행하여, 전체 RMSE(오차)가 최소화되는 지점을 찾아냅니다. 이를 통해 6_1_inference_logp_real_world_prediction_ensemble.py의 추론 과정에서 '직관'이 아닌 '데이터'에 기반한 모델 선택을 수행합니다.
+* 본 데모에서는 데이터셋 규모를 고려하여 0.5를 기본값으로 설정했으나, 실제 최적의 임계값은 `6_0_calibrate_gate_threshold.py`를 통해 수학적으로 도출합니다. 이 스크립트는 검증 데이터(Validation Set)에 대한 Grid Search를 수행하여, 전체 RMSE(오차)가 최소화되는 지점을 찾아냅니다. 이를 통해 추론 과정에서 '직관'이 아닌 '데이터'에 기반한 모델 선택을 수행합니다.
 
 
 
