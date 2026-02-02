@@ -1,22 +1,7 @@
-"""6_1_inference_logp_real_world_prediction.py
-
-Real-world LogP inference for MoleculeNet (Lipo) GAT model.
-
-This script is designed to be resilient:
-- Robust paths (works no matter where you run it from)
-- Loads optional metadata (*.meta.json) if present
-- Supports both scaled-target checkpoints (with inverse transform) and raw-target checkpoints
-- Handles PyG from_smiles version differences by trimming/padding node features
-
-Run:
-    python 01_property_prediction/6_1_inference_logp_real_world_prediction.py
-"""
-
 import os
-import json
-from pathlib import Path
-
+import joblib
 import torch
+import torch.nn.functional as F
 
 from torch_geometric.nn import GATConv, global_mean_pool
 from torch_geometric.data import Data
@@ -26,29 +11,39 @@ from rdkit import Chem
 from rdkit import RDLogger
 
 # -----------------------------
-# [System Configuration] Suppress Warnings
+# [System Configuration] Suppress Warnings and Initialize Logging
 # -----------------------------
-RDLogger.DisableLog("rdApp.*")
+RDLogger.DisableLog("rdApp.*")  # Disable RDKit internal warnings for cleaner output
 
+print("SCRIPT START")
+
+# -----------------------------
+# 1. Environment Setup
+# -----------------------------
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device:", device)
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-DATA_ROOT = PROJECT_ROOT / "data" / "Lipo"
+current_dir = os.path.dirname(os.path.abspath(__file__))
+model_path = os.path.join(current_dir, "best_gat_model.pth")
+scaler_path = os.path.join(current_dir, "logp_scaler.pkl")
 
+# Input Feature Dimension (Fixed to 9 based on GATConv configuration)
+IN_DIM = 9
+
+# Target Value Range (Derived from Lipo dataset statistics)
+Y_MIN, Y_MAX = -1.5, 4.5
 
 # -----------------------------
-# 1) Model Architecture (must match training)
+# 2. Model Architecture Definition (Consistent with Training Phase)
 # -----------------------------
 class GAT(torch.nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int = 64, heads: int = 4):
+    def __init__(self, in_dim=IN_DIM):
         super().__init__()
-        self.conv1 = GATConv(in_dim, hidden_dim, heads=heads, concat=False)
-        self.conv2 = GATConv(hidden_dim, hidden_dim, heads=heads, concat=False)
-        self.conv3 = GATConv(hidden_dim, hidden_dim, heads=heads, concat=False)
-        self.lin = torch.nn.Linear(hidden_dim, 1)
+        self.conv1 = GATConv(in_dim, 64, heads=4, concat=False)
+        self.conv2 = GATConv(64, 64, heads=4, concat=False)
+        self.conv3 = GATConv(64, 64, heads=4, concat=False)
+        self.lin = torch.nn.Linear(64, 1)
 
     def forward(self, x, edge_index, batch):
         x = self.conv1(x, edge_index).relu()
@@ -59,119 +54,12 @@ class GAT(torch.nn.Module):
 
 
 # -----------------------------
-# 2) Checkpoint & metadata selection
+# 3. Data Preprocessing: SMILES to Graph Conversion
+#   - Priority 1: PyG from_smiles utility
+#   - Fallback: Manual RDKit feature extraction (if input dimension mismatch occurs)
 # -----------------------------
-def load_meta(meta_path: Path):
-    try:
-        return json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def select_artifacts():
-    """Prefer scaled checkpoint if present, otherwise fall back to raw."""
-    candidates = [
-        (SCRIPT_DIR / "best_gat_model_scaled.pth", SCRIPT_DIR / "best_gat_model_scaled.meta.json"),
-        (SCRIPT_DIR / "best_gat_model.pth", SCRIPT_DIR / "best_gat_model.meta.json"),
-    ]
-
-    for ckpt, meta in candidates:
-        if ckpt.exists():
-            meta_obj = load_meta(meta) if meta.exists() else None
-            return ckpt, meta_obj
-
-    raise FileNotFoundError(
-        "No checkpoint found. Expected one of: best_gat_model_scaled.pth, best_gat_model.pth"
-    )
-
-
-def infer_in_dim(meta_obj) -> int:
-    """Infer in_dim from metadata, otherwise from local dataset, otherwise fallback to 9."""
-    if isinstance(meta_obj, dict) and isinstance(meta_obj.get("in_dim"), int):
-        return int(meta_obj["in_dim"])
-
-    # Try dataset
-    try:
-        ds = MoleculeNet(root=str(DATA_ROOT), name="Lipo")
-        return int(ds.num_node_features)
-    except Exception:
-        return 9
-
-
-def scaling_info(meta_obj):
-    """Return (enabled, scaler_pkl_path, scaler_json_path, mean, scale)."""
-    if not isinstance(meta_obj, dict):
-        return False, None, None, None, None
-
-    ts = meta_obj.get("target_scaling")
-    if not isinstance(ts, dict) or not ts.get("enabled"):
-        return False, None, None, None, None
-
-    scaler_pkl = SCRIPT_DIR / str(ts.get("scaler_pkl", "logp_scaler.pkl"))
-    scaler_json = SCRIPT_DIR / str(ts.get("scaler_json", "logp_scaler.json"))
-    mean = ts.get("mean")
-    scale = ts.get("scale")
-    return True, scaler_pkl, scaler_json, mean, scale
-
-
-def load_scaler_params(meta_obj):
-    """Load mean/scale either from metadata or from scaler files."""
-    enabled, scaler_pkl, scaler_json, mean, scale = scaling_info(meta_obj)
-    if not enabled:
-        return None
-
-    # Prefer explicit numeric params in metadata
-    if isinstance(mean, (int, float)) and isinstance(scale, (int, float)) and float(scale) != 0.0:
-        return float(mean), float(scale)
-
-    # Next: load json (portable)
-    if scaler_json and scaler_json.exists():
-        try:
-            obj = json.loads(scaler_json.read_text(encoding="utf-8"))
-            m = float(obj["mean"])
-            s = float(obj["scale"])
-            if s != 0.0:
-                return m, s
-        except Exception:
-            pass
-
-    # Last: load joblib pkl
-    if scaler_pkl and scaler_pkl.exists():
-        try:
-            import joblib
-
-            sc = joblib.load(scaler_pkl)
-            m = float(sc.mean_[0])
-            s = float(sc.scale_[0])
-            if s != 0.0:
-                return m, s
-        except Exception:
-            pass
-
-    print("[Warning] target_scaling enabled but scaler params could not be loaded.")
-    return None
-
-
-# -----------------------------
-# 3) SMILES -> Graph conversion
-# -----------------------------
-def ensure_feature_dim(x: torch.Tensor, in_dim: int) -> torch.Tensor:
-    """Trim or zero-pad node features to match model in_dim."""
-    if x.dim() != 2:
-        return x
-    cur = x.size(1)
-    if cur == in_dim:
-        return x
-    if cur > in_dim:
-        return x[:, :in_dim]
-
-    # pad
-    pad = torch.zeros((x.size(0), in_dim - cur), dtype=x.dtype, device=x.device)
-    return torch.cat([x, pad], dim=1)
-
-
-def basic_atom_features(atom):
-    """A small, stable set of RDKit-derived features (9 dims)."""
+def get_atom_features_9(atom):
+    # Define 9 atomic features for fallback compatibility
     return [
         atom.GetAtomicNum(),
         atom.GetDegree(),
@@ -184,30 +72,12 @@ def basic_atom_features(atom):
         int(atom.IsInRing()),
     ]
 
-
-def smile_to_graph(smile: str, in_dim: int):
-    # 1) Try PyG from_smiles
-    try:
-        try:
-            from torch_geometric.utils.smiles import from_smiles
-        except Exception:
-            from torch_geometric.utils import from_smiles
-
-        data = from_smiles(smile)
-        data.x = data.x.to(torch.float)
-        data.x = ensure_feature_dim(data.x, in_dim)
-        data.batch = torch.zeros(data.num_nodes, dtype=torch.long)
-        return data
-    except Exception as e:
-        print(f"[Warning] from_smiles failed ({type(e).__name__}: {e}). Using RDKit fallback.")
-
-    # 2) RDKit fallback
+def smile_to_graph_rdkit9(smile: str):
     mol = Chem.MolFromSmiles(smile)
     if mol is None:
         return None
 
-    x = torch.tensor([basic_atom_features(a) for a in mol.GetAtoms()], dtype=torch.float)
-    x = ensure_feature_dim(x, in_dim)
+    x = torch.tensor([get_atom_features_9(a) for a in mol.GetAtoms()], dtype=torch.float)
 
     edges = [[b.GetBeginAtomIdx(), b.GetEndAtomIdx()] for b in mol.GetBonds()]
     edges += [[j, i] for i, j in edges]
@@ -221,91 +91,130 @@ def smile_to_graph(smile: str, in_dim: int):
     data.batch = torch.zeros(data.num_nodes, dtype=torch.long)
     return data
 
-
-# -----------------------------
-# 4) Load model
-# -----------------------------
-def safe_torch_load(path: Path):
+def smile_to_graph(smile: str):
+    # 1) Attempt using PyG from_smiles
     try:
-        return torch.load(path, map_location=device, weights_only=True)
+        # Handle import path variations across PyG versions
+        try:
+            from torch_geometric.utils.smiles import from_smiles
+        except Exception:
+            from torch_geometric.utils import from_smiles
+
+        data = from_smiles(smile)
+        data.x = data.x.to(torch.float)
+
+        # Batch initialization for single-instance inference
+        data.batch = torch.zeros(data.num_nodes, dtype=torch.long)
+
+        x_dim = data.x.size(1)
+        print(f"PyG from_smiles extracted x_dim = {x_dim}")
+
+        # Check for dimension mismatch against model requirements
+        if x_dim != IN_DIM:
+            print(
+                f"[Warning] Dimension Mismatch: extracted x_dim({x_dim}) != IN_DIM({IN_DIM}). "
+                "Reverting to fallback (RDKit 9-feature) method."
+            )
+            return smile_to_graph_rdkit9(smile)
+
+        return data
+
+    except Exception as e:
+        print(f"[Warning] from_smiles failed ({type(e).__name__}: {e}). Reverting to fallback method.")
+        return smile_to_graph_rdkit9(smile)
+
+
+# -----------------------------
+# 4. Model & Scaler Loading
+# -----------------------------
+def load_model_and_scaler():
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    model = GAT(in_dim=IN_DIM).to(device)
+
+    # Secure model loading (Support 'weights_only' parameter if available)
+    try:
+        state = torch.load(model_path, map_location=device, weights_only=True)
     except TypeError:
-        return torch.load(path, map_location=device)
+        state = torch.load(model_path, map_location=device)
 
-
-def load_model():
-    ckpt_path, meta_obj = select_artifacts()
-    in_dim = infer_in_dim(meta_obj)
-
-    print(f"Checkpoint: {ckpt_path.name}")
-    if meta_obj:
-        print("Metadata:", json.dumps(meta_obj, indent=2)[:500] + ("..." if len(json.dumps(meta_obj)) > 500 else ""))
-    else:
-        print("Metadata: (not found)")
-
-    model = GAT(in_dim=in_dim).to(device)
-    state = safe_torch_load(ckpt_path)
     model.load_state_dict(state)
     model.eval()
 
-    scaler_params = load_scaler_params(meta_obj)
+    scaler = None
+    if os.path.exists(scaler_path):
+        try:
+            scaler = joblib.load(scaler_path)
+            print("Scaler loaded successfully:", scaler_path)
+        except Exception as e:
+            print(f"[Warning] Scaler load failed ({type(e).__name__}: {e}). Proceeding without scaler.")
+            scaler = None
+    else:
+        print("[Warning] Scaler file not found. Outputting raw predictions.")
 
-    return model, in_dim, scaler_params
+    return model, scaler
 
 
 # -----------------------------
-# 5) Inference
+# 5. Inference Execution
 # -----------------------------
 @torch.no_grad()
-def predict_logp(model, smile: str, name: str, in_dim: int, scaler_params=None):
-    data = smile_to_graph(smile, in_dim)
+def predict_raw(model, smile: str, name: str):
+    data = smile_to_graph(smile)
     if data is None:
         print(f"[Error] SMILES parsing failed for [{name}]: {smile}")
         return None
 
     data = data.to(device)
-    pred = model(data.x.float(), data.edge_index, data.batch).view(-1)
-    pred_item = float(pred.item())
-
-    if scaler_params is None:
-        print(f"[{name}] Pred(LogP): {pred_item:.4f}")
-        return pred_item
-
-    mean, scale = scaler_params
-    pred_raw = pred_item * scale + mean
-    print(f"[{name}] Pred(scaled): {pred_item:.4f}  ->  Pred(LogP): {pred_raw:.4f}")
-    return pred_raw
+    pred = model(data.x.float(), data.edge_index, data.batch).item()
+    print(f"[{name}] Raw Prediction: {pred:.4f}")
+    return pred
 
 
+# -----------------------------
+# 6. Sanity Check (Model Validation on Benchmark Data)
+# -----------------------------
 @torch.no_grad()
-def sanity_check_on_moleculenet(model, in_dim: int, scaler_params=None):
-    print("\n[Sanity Check] MoleculeNet(Lipo) sample")
-    ds = MoleculeNet(root=str(DATA_ROOT), name="Lipo")
+def sanity_check_on_moleculenet(model):
+    print("\n[Sanity Check] Validating on MoleculeNet (Lipo) Sample")
+    ds = MoleculeNet(root="data/Lipo", name="Lipo")
+
     sample = ds[0].to(device)
+    # Ensure batch attribute exists for single-graph processing
     if not hasattr(sample, "batch") or sample.batch is None:
         sample.batch = torch.zeros(sample.num_nodes, dtype=torch.long, device=device)
 
-    x = ensure_feature_dim(sample.x.float(), in_dim)
-    pred_scaled = float(model(x, sample.edge_index, sample.batch).view(-1).item())
-    y_true = float(sample.y.view(-1).item())
+    x_dim = sample.x.size(1)
+    print(f"Sample x_dim = {x_dim} | Model IN_DIM = {IN_DIM}")
+    print(f"Ground Truth y = {float(sample.y):.4f}")
+    print(f"SMILES = {getattr(sample, 'smiles', '(no smiles field)')}")
 
-    if scaler_params is None:
-        print(f"x_dim(after)={x.size(1)} | model_in_dim={in_dim}")
-        print(f"y_true(LogP)={y_true:.4f} | pred(LogP)={pred_scaled:.4f}")
-    else:
-        mean, scale = scaler_params
-        pred_raw = pred_scaled * scale + mean
-        print(f"x_dim(after)={x.size(1)} | model_in_dim={in_dim}")
-        print(f"y_true(LogP)={y_true:.4f} | pred(scaled)={pred_scaled:.4f} -> pred(LogP)={pred_raw:.4f}")
+    if x_dim != IN_DIM:
+        print("[Warning] Feature dimension mismatch between MoleculeNet sample and Model.")
+        print("   -> Retraining required with IN_DIM set to dataset.num_node_features.")
 
+    pred = model(sample.x.float(), sample.edge_index, sample.batch).item()
+    print(f"Prediction on MoleculeNet sample = {pred:.4f}")
+
+    # Inspect target value distribution (First 50 samples)
+    ys = []
+    for i in range(min(50, len(ds))):
+        ys.append(float(ds[i].y))
+    print(f"Target Distribution (First 50): min={min(ys):.3f}, max={max(ys):.3f}")
     print("===============================================\n")
 
 
 if __name__ == "__main__":
-    model, in_dim, scaler_params = load_model()
+    print("[Real-World Prediction + Sanity Check] Pipeline Initialized\n")
 
-    sanity_check_on_moleculenet(model, in_dim, scaler_params=scaler_params)
+    model, scaler = load_model_and_scaler()
 
-    predict_logp(model, "CC(=O)OC1=CC=CC=C1C(=O)O", "Aspirin", in_dim, scaler_params=scaler_params)
-    predict_logp(model, "CC(=O)NC1=CC=C(C=C1)O", "Tylenol", in_dim, scaler_params=scaler_params)
+    # 1) Validate Model Integrity (Critical Step)
+    sanity_check_on_moleculenet(model)
 
-    print("Done.")
+    # 2) Execute Inference on Target Molecules
+    predict_raw(model, "CC(=O)OC1=CC=CC=C1C(=O)O", "Aspirin")
+    predict_raw(model, "CC(=O)NC1=CC=C(C=C1)O", "Tylenol")
+
+    print("\nProcess Completed.")
