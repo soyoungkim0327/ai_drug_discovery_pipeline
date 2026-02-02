@@ -91,6 +91,8 @@ To overcome the limitations of single models, I constructed an intelligent infer
 * The input is "Out-of-Distribution (OOD)." The system prioritizes **Robustness** and safety by using the regularized model to prevent hallucination or extreme errors.
 
 
+* **Threshold Optimization (Calibration)**
+ While a default threshold of 0.5 is used for demonstration due to the dataset size, the optimal cutoff is scientifically derived using 6_0_calibrate_gate_threshold.py. This script performs a Grid Search on the validation set to find the exact similarity score that minimizes the overall RMSE. This ensures the switching logic in 6_1_inference_logp_real_world_prediction_ensemble.py is based on data-driven evidence rather than intuition.
 
 
 
@@ -291,7 +293,8 @@ Distributed under the MIT License. See `LICENSE` for more information.
 * **Low Similarity (≤ 0.5): Model B (Dropout GAT) 사용**
 * 입력이 "분포 외 데이터(OOD)"에 속함. **강건성(Robustness)**과 안전성을 최우선으로 하여, 환각(Hallucination)이나 극단적 오차를 방지하는 정규화된 모델 사용.
 
-
+* **임계값 최적화 전략 (Threshold Optimization)**
+본 데모에서는 데이터셋 규모를 고려하여 0.5를 기본값으로 설정했으나, 실제 최적의 임계값은 6_0_calibrate_gate_threshold.py를 통해 수학적으로 도출합니다. 이 스크립트는 검증 데이터(Validation Set)에 대한 Grid Search를 수행하여, 전체 RMSE(오차)가 최소화되는 지점을 찾아냅니다. 이를 통해 6_1_inference_logp_real_world_prediction_ensemble.py의 추론 과정에서 '직관'이 아닌 '데이터'에 기반한 모델 선택을 수행합니다.
 
 
 
